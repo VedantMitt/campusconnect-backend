@@ -1,8 +1,13 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 
-interface AuthRequest extends Request {
-  userId?: string;
+export interface AuthRequest extends Request {
+  user?: {
+    id: string;
+    name?: string;
+    username?: string;
+    profile_pic?: string;
+  };
 }
 
 export const authMiddleware = (
@@ -11,9 +16,6 @@ export const authMiddleware = (
   next: NextFunction
 ) => {
   const authHeader = req.headers.authorization;
-
-  console.log("AUTH HEADER:", authHeader); // ✅ OK here
-  console.log("JWT SECRET:", process.env.JWT_SECRET); // ✅ OK here
 
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     return res.status(401).json({ error: "Unauthorized" });
@@ -28,9 +30,13 @@ export const authMiddleware = (
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET) as {
       id: string;
+      name?: string;
+      username?: string;
+      profile_pic?: string;
     };
 
-    req.userId = decoded.id;
+    req.user = { id: decoded.id, name: decoded.name, username: decoded.username, profile_pic: decoded.profile_pic };
+
     next();
   } catch (err) {
     return res.status(401).json({ error: "Invalid token" });

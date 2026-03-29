@@ -6,3 +6,10 @@ const pool = new Pool({
 });
 
 export default pool;
+
+// Example using a generic update pattern
+export const updateUserProfile = async (userId: string, profileData: any) => {
+  // Logic to update your specific database
+  // e.g., return await prisma.user.update({ where: { id: userId }, data: profileData });
+  console.log(`Updating profile for user ${userId}`, profileData);
+};
