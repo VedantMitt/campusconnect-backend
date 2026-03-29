@@ -1,4 +1,16 @@
 import "dotenv/config";
+
+// --- Global Error Handlers to Prevent Render Crashes ---
+process.on("uncaughtException", (err) => {
+  console.error("UNCAUGHT EXCEPTION! 💥", err);
+  // Optional: Add logging to monitoring service
+});
+
+process.on("unhandledRejection", (err) => {
+  console.error("UNHANDLED REJECTION! 💥", err);
+  // Render handles restarts nicely, but catching it prevents the instantaneous crash loop
+});
+
 import app from "./app";
 import submissionsRoutes from "./routes/submissions.routes";
 

@@ -5,6 +5,11 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
+// VERY IMPORTANT: Catch idle connection errors to prevent Node from crashing randomly
+pool.on("error", (err, client) => {
+  console.error("Unexpected error on idle pg client", err);
+});
+
 export default pool;
 
 // Example using a generic update pattern
