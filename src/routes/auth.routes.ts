@@ -3,8 +3,10 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import pool from "../db";
 import { sendOTPEmail } from "../config/mailer";
+import { OAuth2Client } from "google-auth-library";
 
 const router = Router();
+const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 // ─── Helpers ────────────────────────────────────────
 const generateOTP = () =>
@@ -26,6 +28,123 @@ const isCollegeEmail = (email: string): boolean => {
   if (!domain) return false;
   return COLLEGE_EMAIL_PATTERNS.some(pattern => pattern.test(domain));
 };
+
+// ─── GOOGLE AUTH ────────────────────────────────────
+router.post("/google", async (req, res) => {
+  const { credential } = req.body;
+
+  if (!credential) {
+    return res.status(400).json({ error: "Google credential missing" });
+  }
+
+  try {
+    const ticket = await client.verifyIdToken({
+      idToken: credential,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+
+    const payload = ticket.getPayload();
+    if (!payload || !payload.email) {
+      return res.status(400).json({ error: "Invalid Google token" });
+    }
+
+    const { email, name, picture } = payload;
+    const cleanEmail = email.toLowerCase().trim();
+
+    // Check if user already exists
+    const result = await pool.query(
+      "SELECT id, name, email, username, college, year, profile_pic FROM users WHERE email = $1",
+      [cleanEmail]
+    );
+
+    let user;
+    let isNewUser = false;
+
+    if (result.rows.length > 0) {
+      user = result.rows[0];
+    } else {
+      // Create a skeleton user for social login
+      const college = cleanEmail.includes(".edu") 
+        ? cleanEmail.split("@")[1].split(".")[0].toUpperCase() 
+        : "UNKNOWN";
+
+      const insertResult = await pool.query(
+        `INSERT INTO users (name, email, profile_pic, college, is_verified)
+         VALUES ($1, $2, $3, $4, TRUE)
+         RETURNING id, name, email, username, college, year, profile_pic`,
+        [name, cleanEmail, picture, college]
+      );
+      user = insertResult.rows[0];
+      isNewUser = true;
+    }
+
+    // Generate JWT
+    const token = jwt.sign(
+      { id: user.id, email: user.email, username: user.username },
+      process.env.JWT_SECRET as string,
+      { expiresIn: "7d" }
+    );
+
+    // If username or year is missing, tell the frontend to prompt for details
+    const needsCompletion = !user.username || !user.year;
+
+    res.json({ 
+      token, 
+      user, 
+      isNewUser, 
+      needsCompletion 
+    });
+  } catch (err: any) {
+    console.error("GOOGLE AUTH ERROR:", err.message);
+    res.status(500).json({ error: "Google Authentication failed" });
+  }
+});
+
+// ─── COMPLETE REGISTRATION ──────────────────────────
+router.post("/complete-registration", async (req, res) => {
+  const { userId, username, year } = req.body;
+
+  if (!userId || !username || !year) {
+    return res.status(400).json({ error: "All fields required" });
+  }
+
+  const cleanUsername = sanitize(username).toLowerCase().replace(/[^a-z0-9._-]/g, "");
+
+  try {
+    // Check if username is taken
+    const usernameCheck = await pool.query(
+      "SELECT id FROM users WHERE username = $1 AND id != $2",
+      [cleanUsername, userId]
+    );
+
+    if (usernameCheck.rows.length > 0) {
+      return res.status(400).json({ error: "Username already taken" });
+    }
+
+    const result = await pool.query(
+      "UPDATE users SET username = $1, year = $2 WHERE id = $3 RETURNING id, name, email, username, college, year, profile_pic",
+      [cleanUsername, year, userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const user = result.rows[0];
+
+    // Generate JWT so the user is logged in immediately
+    const token = jwt.sign(
+      { id: user.id, email: user.email, username: user.username },
+      process.env.JWT_SECRET as string,
+      { expiresIn: "7d" }
+    );
+
+    res.json({ message: "Registration completed", token, user });
+  } catch (err: any) {
+    console.error("COMPLETE REGISTRATION ERROR:", err.message);
+    res.status(500).json({ error: "Failed to complete registration" });
+  }
+});
 
 // ─── REGISTER ───────────────────────────────────────
 router.post("/register", async (req, res) => {
@@ -112,15 +231,10 @@ router.post("/register", async (req, res) => {
       [cleanEmail, otp, expires_at]
     );
 
-    // Send OTP email
-    try {
-      await sendOTPEmail(cleanEmail, otp);
-    } catch (emailErr: any) {
-      console.error("EMAIL SEND ERROR:", emailErr.message);
-      return res.status(500).json({
-        error: "Account created but failed to send OTP email. Check EMAIL_USER and EMAIL_PASS in .env",
-      });
-    }
+    // Send OTP email in background
+    sendOTPEmail(cleanEmail, otp).catch((emailErr: any) => {
+      console.error("BACKGROUND EMAIL SEND ERROR:", emailErr.message);
+    });
 
     res.status(200).json({ message: "OTP sent to your email", email: cleanEmail });
   } catch (err: any) {
@@ -265,7 +379,10 @@ router.post("/forgot-password", async (req, res) => {
       [email, otp, expires_at]
     );
 
-    await sendOTPEmail(email, otp);
+    // Send OTP email in background
+    sendOTPEmail(email, otp).catch((emailErr: any) => {
+      console.error("BACKGROUND EMAIL SEND ERROR FORGOT PASSWORD:", emailErr.message);
+    });
 
     res.json({ message: "OTP sent to your email", email });
   } catch (err: any) {
