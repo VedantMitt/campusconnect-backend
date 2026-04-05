@@ -5,8 +5,94 @@ export const runMigrations = async () => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    await client.query(`CREATE EXTENSION IF NOT EXISTS "pgcrypto"`);
 
-    // 1. Moderation Tables (Blocks & Reports)
+
+    // --- 0. Core Tables Initialization ---
+    // Ensure activities exists before rooms/submissions
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS activities (
+        id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+        title TEXT NOT NULL,
+        type TEXT NOT NULL,
+        date TIMESTAMP NOT NULL,
+        location TEXT NOT NULL,
+        description TEXT,
+        banner TEXT,
+        mode TEXT,
+        host_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        max_participants INTEGER,
+        join_deadline TIMESTAMP,
+        submission_deadline TIMESTAMP,
+        allow_submissions BOOLEAN DEFAULT TRUE,
+        format TEXT DEFAULT 'Event',
+        social_links JSONB DEFAULT '[]',
+        price DECIMAL DEFAULT 0,
+        is_free BOOLEAN DEFAULT TRUE,
+        is_official BOOLEAN DEFAULT FALSE,
+        hosted_by_name TEXT,
+        college_name TEXT,
+        society_name TEXT,
+        view_count INTEGER DEFAULT 0,
+        deleted_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS activity_members (
+        id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+        activity_id UUID REFERENCES activities(id) ON DELETE CASCADE,
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(activity_id, user_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS activity_rsvps (
+        id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+        activity_id UUID REFERENCES activities(id) ON DELETE CASCADE,
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        status VARCHAR(20) NOT NULL, -- going, interested
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(activity_id, user_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS submissions (
+        id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+        activity_id UUID REFERENCES activities(id) ON DELETE CASCADE,
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        content_url TEXT NOT NULL,
+        description TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(activity_id, user_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS votes (
+        id SERIAL PRIMARY KEY,
+        submission_id UUID REFERENCES submissions(id) ON DELETE CASCADE,
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(submission_id, user_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS activity_comments (
+        id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+        activity_id UUID REFERENCES activities(id) ON DELETE CASCADE,
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        content TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS activity_invites (
+        id SERIAL PRIMARY KEY,
+        activity_id UUID REFERENCES activities(id) ON DELETE CASCADE,
+        inviter_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        invitee_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(activity_id, inviter_id, invitee_id)
+      );
+    `);
+    console.log("✅ Activities and Social tables verified");
+
+    // 1. Moderation Tables
     await client.query(`
       CREATE TABLE IF NOT EXISTS blocks (
         id SERIAL PRIMARY KEY,
@@ -50,7 +136,6 @@ export const runMigrations = async () => {
         metadata JSONB DEFAULT '{}'
       );
     `);
-    // Ensure metadata column exists (migration for older schemas)
     await client.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'`);
     console.log("✅ Notifications table verified");
 
@@ -67,7 +152,7 @@ export const runMigrations = async () => {
         searchable BOOLEAN DEFAULT TRUE,
         queue JSONB DEFAULT '[]',
         roles JSONB DEFAULT '{}',
-        activity_id UUID UNIQUE
+        activity_id UUID UNIQUE REFERENCES activities(id) ON DELETE CASCADE
       );
     `);
     
@@ -98,14 +183,12 @@ export const runMigrations = async () => {
     if (cleanup.rowCount && cleanup.rowCount > 0) {
       console.log(`🧹 Cleaned up ${cleanup.rowCount} empty rooms.`);
     }
-    console.log("✅ Rooms + room_members tables verified");
+    console.log("✅ Rooms table verified");
 
-    // 5. User Privacy (Migrations)
+    // 5. User Privacy
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_invisible BOOLEAN DEFAULT FALSE`);
     console.log("✅ User privacy columns verified");
- 
-    // 6. Activities Columns (Migrations)
-
+  
     // 6. Activity Announcements & Moderators
     await client.query(`
       CREATE TABLE IF NOT EXISTS activity_announcements (
@@ -122,15 +205,16 @@ export const runMigrations = async () => {
         PRIMARY KEY (activity_id, user_id)
       );
     `);
-    console.log("✅ Activity Announcements + Moderators verified");
+    console.log("✅ Activity Social tables verified");
 
     await client.query("COMMIT");
     console.log("✨ All migrations completed successfully");
   } catch (err) {
     await client.query("ROLLBACK");
     console.error("❌ Database migration failed:", err);
-    throw err; // Re-throw to prevent server startup
+    throw err;
   } finally {
     client.release();
   }
 };
+
