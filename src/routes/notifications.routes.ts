@@ -4,26 +4,6 @@ import { authMiddleware, AuthRequest } from "../middleware/auth.middleware";
 
 const router = Router();
 
-// Ensure the notifications table exists
-const initNotificationsTable = async () => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS notifications (
-        id SERIAL PRIMARY KEY,
-        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
-        sender_id UUID REFERENCES users(id) ON DELETE CASCADE,
-        type VARCHAR(50) NOT NULL,
-        is_read BOOLEAN DEFAULT FALSE,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-    console.log("Notifications table verified/created");
-  } catch (err) {
-    console.error("Failed to initialize notifications table:", err);
-  }
-};
-initNotificationsTable();
-
 // ─── GET UNREAD NOTIFICATIONS ────────────────────────
 router.get("/", authMiddleware, async (req: AuthRequest, res) => {
   const currentUserId = req.user?.id;
@@ -34,11 +14,12 @@ router.get("/", authMiddleware, async (req: AuthRequest, res) => {
 
   try {
     const { rows } = await pool.query(
-      `SELECT n.id, n.type, n.created_at, u.name, u.username, u.profile_pic, u.college, u.year
+      `SELECT n.id, n.type, n.metadata, n.is_read, n.created_at, u.name, u.username, u.profile_pic, u.college, u.year
        FROM notifications n
        JOIN users u ON n.sender_id = u.id
-       WHERE n.user_id = $1 AND n.is_read = FALSE
-       ORDER BY n.created_at DESC`,
+       WHERE n.user_id = $1
+       ORDER BY n.created_at DESC
+       LIMIT 10`,
       [currentUserId]
     );
 

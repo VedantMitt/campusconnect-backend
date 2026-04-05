@@ -51,6 +51,13 @@ router.post("/google", async (req, res) => {
     const { email, name, picture } = payload;
     const cleanEmail = email.toLowerCase().trim();
 
+    // Check if it's a student email
+    if (!isCollegeEmail(cleanEmail)) {
+      return res.status(400).json({ 
+        error: "Only student emails are allowed (.edu, .ac.in, etc.). Please use your institutional account." 
+      });
+    }
+
     // Check if user already exists
     const result = await pool.query(
       "SELECT id, name, email, username, college, year, profile_pic FROM users WHERE email = $1",
@@ -64,13 +71,11 @@ router.post("/google", async (req, res) => {
       user = result.rows[0];
     } else {
       // Create a skeleton user for social login
-      const college = cleanEmail.includes(".edu") 
-        ? cleanEmail.split("@")[1].split(".")[0].toUpperCase() 
-        : "UNKNOWN";
+      const college = cleanEmail.split("@")[1].split(".")[0].toUpperCase();
 
       const insertResult = await pool.query(
-        `INSERT INTO users (name, email, profile_pic, college, is_verified)
-         VALUES ($1, $2, $3, $4, TRUE)
+        `INSERT INTO users (name, email, profile_pic, college, is_verified, is_external)
+         VALUES ($1, $2, $3, $4, TRUE, FALSE)
          RETURNING id, name, email, username, college, year, profile_pic`,
         [name, cleanEmail, picture, college]
       );
@@ -92,7 +97,7 @@ router.post("/google", async (req, res) => {
       token, 
       user, 
       isNewUser, 
-      needsCompletion 
+      needsCompletion
     });
   } catch (err: any) {
     console.error("GOOGLE AUTH ERROR:", err.message);

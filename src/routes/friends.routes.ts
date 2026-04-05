@@ -4,26 +4,6 @@ import { authMiddleware, AuthRequest } from "../middleware/auth.middleware";
 
 const router = Router();
 
-// Ensure the friends table exists
-const initFriendsTable = async () => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS friends (
-        id SERIAL PRIMARY KEY,
-        user_id1 UUID REFERENCES users(id) ON DELETE CASCADE,
-        user_id2 UUID REFERENCES users(id) ON DELETE CASCADE,
-        status VARCHAR(20) DEFAULT 'pending', -- 'pending' or 'accepted'
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(user_id1, user_id2)
-      );
-    `);
-    console.log("Friends table verified/created");
-  } catch (err) {
-    console.error("Failed to initialize friends table:", err);
-  }
-};
-initFriendsTable();
-
 // ─── SEND FRIEND REQUEST ────────────────────────────
 router.post("/request/:userId", authMiddleware, async (req: AuthRequest, res) => {
   const currentUserId = req.user?.id;
@@ -169,32 +149,58 @@ router.get("/", authMiddleware, async (req: AuthRequest, res) => {
   }
 
   try {
-    const { rows } = await pool.query(
-      `SELECT 
-         u.id, 
-         u.name, 
-         u.username, 
-         u.profile_pic,
-         u.college,
-         u.year,
-         u.bio,
-         u.vibe_tags,
-         u.current_status,
-         u.interests,
-         CASE
-           WHEN u.status_updated_at IS NOT NULL
-             AND u.status_updated_at > NOW() - INTERVAL '24 hours'
-           THEN TRUE
+     const { rows } = await pool.query(
+       `SELECT 
+          u.id, 
+          u.name, 
+          u.username, 
+          u.profile_pic,
+          u.college,
+          u.year,
+          u.bio,
+          u.vibe_tags,
+          u.current_status,
+          u.status_updated_at,
+          u.interests,
+          CASE
+            WHEN u.status_updated_at IS NOT NULL
+              AND u.status_updated_at > NOW() - INTERVAL '24 hours'
+            THEN TRUE
            ELSE FALSE
-         END AS online
-       FROM friends f
-       JOIN users u ON (f.user_id1 = u.id OR f.user_id2 = u.id)
-       WHERE (f.user_id1 = $1 OR f.user_id2 = $1)
-         AND f.status = 'accepted'
-         AND u.id != $1
-       ORDER BY online DESC, u.name ASC`,
-      [currentUserId]
-    );
+          END AS online,
+          u.is_invisible,
+          (
+            SELECT CASE WHEN u.is_invisible THEN NULL ELSE json_agg(json_build_object('id', r.id, 'name', r.name)) END
+            FROM rooms r
+            JOIN room_members rm ON rm.room_id = r.id
+            WHERE rm.user_id = u.id AND rm.status = 'approved'
+          ) as active_rooms,
+          (
+            SELECT CASE WHEN u.is_invisible THEN NULL ELSE json_agg(json_build_object('id', p.id, 'title', p.title)) END
+            FROM dm_roulette_pools p
+            JOIN dm_roulette_entries e ON e.pool_id = p.id
+            WHERE e.user_id = u.id AND p.status = 'open'
+          ) as active_pools,
+          (
+            SELECT CASE WHEN u.is_invisible THEN NULL ELSE json_agg(json_build_object('id', g.id, 'title', g.title)) END
+            FROM gtl_games g
+            JOIN gtl_members m ON m.game_id = g.id
+            WHERE m.user_id = u.id AND g.status != 'finished' AND m.status = 'approved'
+          ) as active_gtl,
+          (
+            SELECT CASE WHEN u.is_invisible THEN NULL ELSE json_agg(json_build_object('id', a.id, 'title', a.title)) END
+            FROM activities a
+            JOIN activity_members am ON am.activity_id = a.id
+            WHERE am.user_id = u.id AND a.deleted_at IS NULL AND a.date > NOW() - INTERVAL '12 hours'
+          ) as active_activities
+        FROM friends f
+        JOIN users u ON (f.user_id1 = u.id OR f.user_id2 = u.id)
+        WHERE (f.user_id1 = $1 OR f.user_id2 = $1)
+          AND f.status = 'accepted'
+          AND u.id != $1
+        ORDER BY online DESC, u.name ASC`,
+       [currentUserId]
+     );
 
     res.json(rows);
   } catch (err) {

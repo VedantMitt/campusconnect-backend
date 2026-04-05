@@ -13,14 +13,14 @@ export const sendOTPEmail = async (to: string, otp: string) => {
     },
     body: JSON.stringify({
       sender: {
-        name: "CampusConnect",
+        name: "Loomus",
         email: process.env.EMAIL_USER, // The Gmail address you verified in Brevo
       },
       to: [{ email: to }],
-      subject: "Verify your CampusConnect account",
+      subject: "Verify your Loomus account",
       htmlContent: `
         <div style="font-family: sans-serif; max-width: 400px; margin: 0 auto;">
-          <h2 style="color: #1d4ed8;">CampusConnect</h2>
+          <h2 style="color: #1d4ed8;">Loomus</h2>
           <p>Your verification code is:</p>
           <div style="font-size: 36px; font-weight: bold; letter-spacing: 8px; color: #1d4ed8; padding: 20px 0;">
             ${otp}

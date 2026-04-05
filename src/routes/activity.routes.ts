@@ -9,7 +9,7 @@ const router = Router();
 // ─────────────────────────────────────────────
 router.get("/", authMiddleware, async (req: any, res) => {
   const userId = req.user.id;
-  const { type, status, search, tab } = req.query;
+  const { type, status, search, tab, city, mode, is_free, college } = req.query;
 
   try {
     let conditions = ["a.deleted_at IS NULL"];
@@ -28,8 +28,36 @@ router.get("/", authMiddleware, async (req: any, res) => {
       conditions.push(`a.date <= NOW() AND (a.submission_deadline IS NULL OR a.submission_deadline >= NOW())`);
     } else if (status === "upcoming") {
       conditions.push(`a.date > NOW()`);
-    } else if (status === "past") {
+    } else if (status === "past" || status === "expired") {
       conditions.push(`(a.submission_deadline IS NOT NULL AND a.submission_deadline < NOW()) OR (a.submission_deadline IS NULL AND a.date < NOW() - INTERVAL '24 hours')`);
+    }
+
+    // City filter (match against location)
+    if (city) {
+      conditions.push(`LOWER(a.location) LIKE LOWER($${paramIdx})`);
+      params.push(`%${city}%`);
+      paramIdx++;
+    }
+
+    // College filter (match against official events)
+    if (college) {
+      conditions.push(`LOWER(a.college_name) = LOWER($${paramIdx})`);
+      params.push(college);
+      paramIdx++;
+    }
+
+    // Mode filter (online/offline)
+    if (mode) {
+      conditions.push(`LOWER(a.mode) = LOWER($${paramIdx})`);
+      params.push(mode);
+      paramIdx++;
+    }
+
+    // Paid/Free filter
+    if (is_free === "true") {
+      conditions.push(`(a.is_free = TRUE OR a.price = 0 OR a.price IS NULL)`);
+    } else if (is_free === "false") {
+      conditions.push(`a.is_free = FALSE AND a.price > 0`);
     }
 
     // Search
@@ -97,11 +125,40 @@ router.get("/", authMiddleware, async (req: any, res) => {
 });
 
 // ─────────────────────────────────────────────
+// GET /activities/top — top trending activities (for discover page)
+// ─────────────────────────────────────────────
+router.get("/top", authMiddleware, async (req: any, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT a.id, a.title, a.type, a.date, a.location, a.banner, a.mode, a.is_free, a.price,
+        a.is_official, a.hosted_by_name, a.college_name, a.society_name,
+        u.name AS host_name, u.username AS host_username, u.profile_pic AS host_pic,
+        (SELECT COUNT(*) FROM activity_rsvps r WHERE r.activity_id = a.id AND r.status = 'going') AS going_count,
+        (SELECT COUNT(*) FROM activity_rsvps r WHERE r.activity_id = a.id AND r.status = 'interested') AS interested_count
+      FROM activities a
+      JOIN users u ON u.id = a.host_id
+      WHERE a.deleted_at IS NULL AND a.date > NOW() - INTERVAL '24 hours'
+      ORDER BY going_count DESC, a.date ASC
+      LIMIT 10
+    `);
+    res.json(rows);
+  } catch (err) {
+    console.error("TOP ACTIVITIES ERROR:", err);
+    res.status(500).json({ error: "Failed to fetch top activities" });
+  }
+});
+
+// ─────────────────────────────────────────────
 // POST /activities — create new activity
 // ─────────────────────────────────────────────
 router.post("/", authMiddleware, async (req: any, res) => {
   const userId = req.user.id;
-  const { title, type, date, location, description, banner, mode, max_participants, join_deadline, submission_deadline, allow_submissions, format, social_links } = req.body;
+  const { 
+    title, type, date, location, description, banner, mode, 
+    max_participants, join_deadline, submission_deadline, 
+    allow_submissions, format, social_links, price, is_free,
+    is_official, hosted_by_name, college_name, society_name
+  } = req.body;
 
   if (!title || !type || !date || !location) {
     return res.status(400).json({ error: "title, type, date, location are required" });
@@ -109,10 +166,22 @@ router.post("/", authMiddleware, async (req: any, res) => {
 
   try {
     const { rows } = await pool.query(
-      `INSERT INTO activities (title, type, date, location, description, banner, mode, host_id, max_participants, join_deadline, submission_deadline, allow_submissions, format, social_links)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+      `INSERT INTO activities (
+        title, type, date, location, description, banner, mode, host_id, 
+        max_participants, join_deadline, submission_deadline, allow_submissions, 
+        format, social_links, price, is_free,
+        is_official, hosted_by_name, college_name, society_name
+      )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
        RETURNING *`,
-      [title, type, date, location, description || null, banner || null, mode || null, userId, max_participants || null, join_deadline || null, submission_deadline || null, allow_submissions === undefined ? true : allow_submissions, format || 'Event', JSON.stringify(social_links || [])]
+      [
+        title, type, date, location, description || null, banner || null, mode || null, userId, 
+        max_participants || null, join_deadline || null, submission_deadline || null, 
+        allow_submissions === undefined ? true : allow_submissions, format || 'Event', 
+        JSON.stringify(social_links || []), price || 0, is_free !== undefined ? is_free : true,
+        is_official === undefined ? false : is_official,
+        hosted_by_name || null, college_name || null, society_name || null
+      ]
     );
 
     // Auto-join the host as a member
@@ -218,7 +287,8 @@ router.post("/:id/rsvp", authMiddleware, async (req: any, res) => {
 
         // Also handle room creation/join
         const room = await pool.query(
-          `INSERT INTO rooms (activity_id) VALUES ($1)
+          `INSERT INTO rooms (activity_id, name, type, host_id, visibility, searchable)
+           SELECT id, title, 'WATCH PARTY', host_id, 'public', TRUE FROM activities WHERE id = $1
            ON CONFLICT (activity_id) DO UPDATE SET activity_id = EXCLUDED.activity_id
            RETURNING id`,
           [activityId]
@@ -268,7 +338,8 @@ router.post("/:id/join", authMiddleware, async (req: any, res) => {
     );
 
     const room = await pool.query(
-      `INSERT INTO rooms (activity_id) VALUES ($1)
+      `INSERT INTO rooms (activity_id, name, type, host_id, visibility, searchable)
+       SELECT id, title, 'WATCH PARTY', host_id, 'public', TRUE FROM activities WHERE id = $1
        ON CONFLICT (activity_id) DO UPDATE SET activity_id = EXCLUDED.activity_id
        RETURNING id`,
       [activityId]
@@ -371,9 +442,8 @@ router.post("/:id/invite", authMiddleware, async (req: any, res) => {
     const activity = await pool.query(`SELECT title FROM activities WHERE id = $1`, [activityId]);
     
     await pool.query(
-      `INSERT INTO notifications (user_id, type, sender_id)
-       VALUES ($1, 'activity_invite', $2)`,
-      [invitee_id, inviterId]
+      `INSERT INTO notifications (user_id, sender_id, type, metadata) VALUES ($1, $2, 'activity_invite', $3)`,
+      [invitee_id, inviterId, JSON.stringify({ activity_id: activityId })]
     );
 
     res.json({ message: "Invite sent" });
@@ -482,7 +552,13 @@ router.get("/:id/submissions", async (req, res) => {
 router.put("/:id", authMiddleware, async (req: any, res) => {
   const activityId = req.params.id;
   const userId = req.user.id;
-  const { title, type, date, location, description, banner, mode, max_participants, join_deadline, submission_deadline, allow_submissions, format, social_links } = req.body;
+  const { 
+    title, type, date, location, description, banner, mode, 
+    max_participants, join_deadline, submission_deadline, 
+    allow_submissions, format, social_links,
+    is_official, hosted_by_name, college_name, society_name,
+    is_free, price
+  } = req.body;
 
   try {
     // Verify host
@@ -504,10 +580,23 @@ router.put("/:id", authMiddleware, async (req: any, res) => {
         submission_deadline = $10,
         allow_submissions = COALESCE($11, allow_submissions),
         format = COALESCE($12, format),
-        social_links = COALESCE($13, social_links)
-       WHERE id = $14
+        social_links = COALESCE($13, social_links),
+        is_official = COALESCE($14, is_official),
+        hosted_by_name = COALESCE($15, hosted_by_name),
+        college_name = COALESCE($16, college_name),
+        society_name = COALESCE($17, society_name),
+        is_free = COALESCE($18, is_free),
+        price = COALESCE($19, price)
+       WHERE id = $20
        RETURNING *`,
-      [title, type, date, location, description, banner, mode, max_participants || null, join_deadline || null, submission_deadline || null, allow_submissions, format, social_links ? JSON.stringify(social_links) : null, activityId]
+      [
+        title, type, date, location, description, banner, mode, 
+        max_participants || null, join_deadline || null, submission_deadline || null, 
+        allow_submissions, format, social_links ? JSON.stringify(social_links) : null,
+        is_official, hosted_by_name, college_name, society_name,
+        is_free, price,
+        activityId
+      ]
     );
 
     res.json(rows[0]);
@@ -724,6 +813,162 @@ router.post("/polls/:option_id/vote", authMiddleware, async (req: any, res) => {
   } catch (err) {
     console.error("VOTE ERROR:", err);
     res.status(500).json({ error: "Failed to cast vote" });
+  }
+});
+
+// ─────────────────────────────────────────────
+// GET /activities/:id/announcements — get announcements
+// ─────────────────────────────────────────────
+router.get("/:id/announcements", authMiddleware, async (req: any, res) => {
+  const activityId = req.params.id;
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT a.*, u.name as sender_name, u.username as sender_username, u.profile_pic as sender_pic
+       FROM activity_announcements a
+       JOIN users u ON u.id = a.sender_id
+       WHERE a.activity_id = $1
+       ORDER BY a.created_at DESC`,
+      [activityId]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error("GET ANNOUNCEMENTS ERROR:", err);
+    res.status(500).json({ error: "Failed to load announcements" });
+  }
+});
+
+// ─────────────────────────────────────────────
+// POST /activities/:id/announcements — post announcement (Host/Mod only)
+// ─────────────────────────────────────────────
+router.post("/:id/announcements", authMiddleware, async (req: any, res) => {
+  const activityId = req.params.id;
+  const userId = req.user.id;
+  const { content } = req.body;
+
+  if (!content?.trim()) {
+    return res.status(400).json({ error: "Content is required" });
+  }
+
+  try {
+    // Permission check: Host or Moderator
+    const activity = await pool.query(`SELECT host_id, title FROM activities WHERE id = $1`, [activityId]);
+    if (activity.rows.length === 0) return res.status(404).json({ error: "Activity not found" });
+
+    const modCheck = await pool.query(
+      `SELECT 1 FROM activity_moderators WHERE activity_id = $1 AND user_id = $2`,
+      [activityId, userId]
+    );
+
+    if (activity.rows[0].host_id !== userId && modCheck.rows.length === 0) {
+      return res.status(403).json({ error: "Only Host or Moderator can post announcements" });
+    }
+
+    // Insert announcement
+    const { rows } = await pool.query(
+      `INSERT INTO activity_announcements (activity_id, sender_id, content) VALUES ($1, $2, $3) RETURNING *`,
+      [activityId, userId, content.trim()]
+    );
+
+    // Notify all members (joined or RSVP'd)
+    const members = await pool.query(
+      `SELECT DISTINCT user_id FROM (
+        SELECT user_id FROM activity_members WHERE activity_id = $1
+        UNION
+        SELECT user_id FROM activity_rsvps WHERE activity_id = $1
+      ) all_m WHERE user_id != $2`,
+      [activityId, userId]
+    );
+
+    const notificationPromises = members.rows.map(m => {
+      return pool.query(
+        `INSERT INTO notifications (user_id, sender_id, type, metadata) 
+         VALUES ($1, $2, 'activity_announcement', $3)`,
+        [m.user_id, userId, JSON.stringify({ activity_id: activityId, title: activity.rows[0].title })]
+      );
+    });
+
+    await Promise.all(notificationPromises);
+
+    res.json(rows[0]);
+  } catch (err) {
+    console.error("POST ANNOUNCEMENT ERROR:", err);
+    res.status(500).json({ error: "Failed to post announcement" });
+  }
+});
+
+// ─────────────────────────────────────────────
+// GET /activities/:id/moderators — list moderators
+// ─────────────────────────────────────────────
+router.get("/:id/moderators", authMiddleware, async (req: any, res) => {
+  const activityId = req.params.id;
+  try {
+    const { rows } = await pool.query(
+      `SELECT u.id, u.name, u.username, u.profile_pic, am.assigned_at
+       FROM activity_moderators am
+       JOIN users u ON u.id = am.user_id
+       WHERE am.activity_id = $1
+       ORDER BY am.assigned_at ASC`,
+      [activityId]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error("GET MODERATORS ERROR:", err);
+    res.status(500).json({ error: "Failed to load moderators" });
+  }
+});
+
+// ─────────────────────────────────────────────
+// POST /activities/:id/moderators — add moderator (Host only)
+// ─────────────────────────────────────────────
+router.post("/:id/moderators", authMiddleware, async (req: any, res) => {
+  const activityId = req.params.id;
+  const hostUserId = req.user.id;
+  const { user_id } = req.body;
+
+  if (!user_id) return res.status(400).json({ error: "user_id is required" });
+
+  try {
+    // Verify host
+    const activity = await pool.query(`SELECT host_id FROM activities WHERE id = $1`, [activityId]);
+    if (activity.rows.length === 0) return res.status(404).json({ error: "Activity not found" });
+    if (activity.rows[0].host_id !== hostUserId) return res.status(403).json({ error: "Only the host can manage moderators" });
+
+    await pool.query(
+      `INSERT INTO activity_moderators (activity_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      [activityId, user_id]
+    );
+
+    res.json({ message: "Moderator added" });
+  } catch (err) {
+    console.error("ADD MODERATOR ERROR:", err);
+    res.status(500).json({ error: "Failed to add moderator" });
+  }
+});
+
+// ─────────────────────────────────────────────
+// DELETE /activities/:id/moderators/:userId — remove moderator (Host only)
+// ─────────────────────────────────────────────
+router.delete("/:id/moderators/:userId", authMiddleware, async (req: any, res) => {
+  const activityId = req.params.id;
+  const hostUserId = req.user.id;
+  const targetUserId = req.params.userId;
+
+  try {
+    // Verify host
+    const activity = await pool.query(`SELECT host_id FROM activities WHERE id = $1`, [activityId]);
+    if (activity.rows.length === 0) return res.status(404).json({ error: "Activity not found" });
+    if (activity.rows[0].host_id !== hostUserId) return res.status(403).json({ error: "Only the host can manage moderators" });
+
+    await pool.query(
+      `DELETE FROM activity_moderators WHERE activity_id = $1 AND user_id = $2`,
+      [activityId, targetUserId]
+    );
+
+    res.json({ message: "Moderator removed" });
+  } catch (err) {
+    console.error("DELETE MODERATOR ERROR:", err);
+    res.status(500).json({ error: "Failed to remove moderator" });
   }
 });
 

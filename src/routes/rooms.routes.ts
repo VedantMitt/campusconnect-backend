@@ -72,12 +72,31 @@ router.post("/", authMiddleware, async (req: AuthRequest, res: Response) => {
   }
 
   try {
-    const result = await pool.query(
-      `INSERT INTO rooms (name, type, host_id, media_url) 
-       VALUES ($1, $2, $3, $4) RETURNING *`,
-      [name, type, hostId, media_url || ""]
-    );
-    res.json(result.rows[0]);
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query(
+        `INSERT INTO rooms (name, type, host_id, media_url) 
+         VALUES ($1, $2, $3, $4) RETURNING *`,
+        [name, type, hostId, media_url || ""]
+      );
+      const room = result.rows[0];
+      
+      // Auto-add host as approved member
+      await client.query(
+        `INSERT INTO room_members (room_id, user_id, status) 
+         VALUES ($1, $2, $3)`,
+        [room.id, hostId, 'approved']
+      );
+      
+      await client.query("COMMIT");
+      res.json(room);
+    } catch (err: any) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
   } catch (err: any) {
     console.error("Create Room error:", err);
     res.status(500).json({ error: err.message || "Failed to create room" });

@@ -67,7 +67,7 @@ app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
 
 // ─── Health Check ────────────────────────────────────
 app.get("/", (_req, res) => {
-  res.json({ status: "CampusConnect API running" });
+  res.json({ status: "Loomus API running" });
 });
 
 // ─── Routes ──────────────────────────────────────────
