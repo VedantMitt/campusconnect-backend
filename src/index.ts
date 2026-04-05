@@ -141,7 +141,7 @@ async function startServer() {
     });
 
     // 5. Finally, Listen
-    httpServer.listen(PORT, () => {
+    httpServer.listen(PORT, "0.0.0.0", () => {
       console.log(`
 🚀 Server is up and running!
 ----------------------------

@@ -4,25 +4,7 @@ import { authMiddleware, AuthRequest } from "../middleware/auth.middleware";
 
 const router = Router();
 
-// Initialize the rooms table
-const initRoomsTable = async () => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS rooms (
-        id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-        name VARCHAR(255) NOT NULL,
-        type VARCHAR(50) NOT NULL,
-        host_id UUID REFERENCES users(id) ON DELETE CASCADE,
-        media_url TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
-    console.log("Rooms table verified/created");
-  } catch (err) {
-    console.error("Failed to initialize rooms table:", err);
-  }
-};
-initRoomsTable();
+// Rooms table is now initialized in migrations.ts
 
 // ─── GET ACTIVE ROOMS ──────────────────────────────────────────
 router.get("/", authMiddleware, async (req: AuthRequest, res: Response) => {
